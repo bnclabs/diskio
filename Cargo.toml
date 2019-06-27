@@ -1,0 +1,12 @@
+[package]
+name = "diskio"
+version = "0.1.0"
+description = "Tool to measure disk performance"
+repository = "https://github.com/bnclabs/diskio"
+keywords = ["performance", "testing"]
+categories = ["testing"]
+authors = ["prataprc <prataprc@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+structopt = { version = "0.2", default-features = false }
