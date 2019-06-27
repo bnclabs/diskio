@@ -53,7 +53,7 @@ impl Context {
             path.push(dir);
             fs::create_dir_all(path.as_path())?;
             path.push(format!("diskio-shard-{}.data", i));
-            fs::remove_file(path.as_path())?;
+            fs::remove_file(path.as_path()).ok();
             println!("creating file: {} ..", path.to_str().unwrap());
             let fd = fs::OpenOptions::new()
                 .append(true)
