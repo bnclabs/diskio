@@ -5,6 +5,7 @@ use std::{
     fs,
     io::{self, Write},
     path,
+    str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
     thread,
 };
@@ -16,10 +17,10 @@ struct Opt {
     path: String,
 
     #[structopt(long = "block-size", default_value = "1024")]
-    block_size: usize,
+    block_size: Isize,
 
     #[structopt(long = "data-size", default_value = "1073741824")]
-    data_size: isize,
+    data_size: Isize,
 
     #[structopt(long = "shards", default_value = "1")]
     nshards: isize,
@@ -36,12 +37,12 @@ struct Context {
 
 impl From<Opt> for Context {
     fn from(opt: Opt) -> Context {
-        let mut block = Vec::with_capacity(opt.block_size);
+        let mut block = Vec::with_capacity(opt.block_size.0 as usize);
         block.resize(block.capacity(), 0xAB);
         Context {
             shards: vec![],
             block,
-            data_size: opt.data_size / opt.nthreads,
+            data_size: opt.data_size.0 / opt.nthreads,
         }
     }
 }
@@ -132,5 +133,46 @@ fn humanize(bytes: usize) -> String {
         format!("{}GB", bytes / (1024 * 1024 * 1024))
     } else {
         format!("{}TB", bytes / (1024 * 1024 * 1024 * 1024))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Isize(isize);
+
+impl FromStr for Isize {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Isize, Self::Err> {
+        if s.len() > 0 {
+            let chs: Vec<char> = s.chars().collect();
+            let (s, amp) = match chs[chs.len() - 1] {
+                'k' | 'K' => {
+                    let s: String = chs[..(chs.len() - 1)].iter().collect();
+                    (s, 1024)
+                }
+                'm' | 'M' => {
+                    let s: String = chs[..(chs.len() - 1)].iter().collect();
+                    (s, 1024 * 1024)
+                }
+                'g' | 'G' => {
+                    let s: String = chs[..(chs.len() - 1)].iter().collect();
+                    (s, 1024 * 1024 * 1024)
+                }
+                't' | 'T' => {
+                    let s: String = chs[..(chs.len() - 1)].iter().collect();
+                    (s, 1024 * 1024 * 1024)
+                }
+                _ => {
+                    let s: String = chs[..(chs.len() - 1)].iter().collect();
+                    (s, 1)
+                }
+            };
+            match s.parse::<isize>() {
+                Err(err) => Err(format!("parse: {:?}", err)),
+                Ok(n) => Ok(Isize(n * amp)),
+            }
+        } else {
+            Ok(Isize(0))
+        }
     }
 }
