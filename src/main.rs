@@ -109,7 +109,7 @@ fn main() {
         let start_time = time::SystemTime::now();
         for i in 0..opt.nthreads {
             let fd = Context::make_data_file(i, &opt).unwrap();
-            let ctxt = Context::new(bsize, dsize, fd);
+            let ctxt = Context::new(bsize, dsize / opt.nthreads, fd);
             writers.push(thread::spawn(move || writer_thread(ctxt)));
         }
 
