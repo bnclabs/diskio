@@ -8,6 +8,8 @@ pub fn latency(
     title: String,
     mut values: Vec<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    println!("plotting latency graph {}", title);
+
     let root = BitMapBackend::new(&path, (1024, 768)).into_drawing_area();
     root.fill(&White)?;
 
@@ -47,6 +49,8 @@ pub fn throughput(
     title: String,
     mut values: Vec<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    println!("plotting throughput graph {}", title);
+
     values.insert(0, 0);
     let throughputs: Vec<f64> = values
         .clone()

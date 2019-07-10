@@ -25,10 +25,10 @@ struct Opt {
     path: String,
 
     #[structopt(long = "block-size", default_value = "1024")]
-    block_size: SizeRange,
+    block_size: SizeArg,
 
     #[structopt(long = "data-size", default_value = "1073741824")]
-    data_size: SizeRange,
+    data_size: SizeArg,
 
     #[structopt(long = "threads", default_value = "1")]
     nthreads: isize,
@@ -213,10 +213,15 @@ fn humanize(bytes: usize) -> String {
 }
 
 #[derive(Debug, Clone)]
-struct SizeRange(Option<isize>, Option<isize>);
+enum SizeArg {
+    None,
+    Range(Option<isize>, Option<isize>),
+    List(Vec<isize>),
+}
 
 lazy_static! {
-    static ref ARG_RE: Regex = Regex::new("([0-9]+[kKmMgG]?)(..[0-9]+[kKmMgG]?)?").unwrap();
+    static ref ARG_RE1: Regex = Regex::new(r"^([0-9]+[kKmMgG]?)(\.\.[0-9]+[kKmMgG]?)?$").unwrap();
+    static ref ARG_RE2: Regex = Regex::new(r"^([0-9]+[kKmMgG]?)(,[0-9]+[kKmMgG]?)*$").unwrap();
     static ref BLOCK_SIZES: [isize; 9] = [
         128,
         256,
@@ -238,23 +243,40 @@ lazy_static! {
     ];
 }
 
-impl FromStr for SizeRange {
+impl FromStr for SizeArg {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<SizeRange, Self::Err> {
-        let captrs = match ARG_RE.captures(s) {
-            None => return Ok(SizeRange(None, None)),
-            Some(captrs) => captrs,
+    fn from_str(s: &str) -> Result<SizeArg, Self::Err> {
+        //println!("re1 {}", s);
+        match ARG_RE1.captures(s) {
+            None => (),
+            Some(captrs) => {
+                let x = captrs.get(1).map(|m| SizeArg::to_isize(m.as_str()));
+                let y = captrs.get(2).map(|m| {
+                    SizeArg::to_isize(m.as_str().chars().skip(2).collect::<String>().as_str())
+                });
+                // println!("re1 {}, {:?} {:?}", s, x, y);
+                return Ok(SizeArg::Range(x.transpose()?, y.transpose()?));
+            }
         };
-        let x = captrs.get(1).map(|m| SizeRange::to_isize(m.as_str()));
-        let y = captrs
-            .get(2)
-            .map(|m| SizeRange::to_isize(m.as_str().chars().skip(2).collect::<String>().as_str()));
-        Ok(SizeRange(x.transpose()?, y.transpose()?))
+        //println!("re2 {}", s);
+        match ARG_RE2.captures(s) {
+            None => Ok(SizeArg::None),
+            Some(captrs) => {
+                let sizes = captrs
+                    .get(0)
+                    .unwrap()
+                    .as_str()
+                    .split(',')
+                    .map(|s| SizeArg::to_isize(s).unwrap())
+                    .collect::<Vec<isize>>();
+                return Ok(SizeArg::List(sizes));
+            }
+        }
     }
 }
 
-impl SizeRange {
+impl SizeArg {
     fn to_isize(s: &str) -> Result<isize, String> {
         let chs: Vec<char> = s.chars().collect();
         let (s, amp) = match chs[chs.len() - 1] {
@@ -288,10 +310,12 @@ impl SizeRange {
 
     fn get_blocks(self) -> Vec<isize> {
         let (from, till) = match self {
-            SizeRange(Some(x), Some(y)) => (x, y),
-            SizeRange(Some(x), None) => return vec![x],
-            SizeRange(None, Some(_)) => unreachable!(),
-            SizeRange(None, None) => return vec![],
+            SizeArg::None => return vec![],
+            SizeArg::List(sizes) => return sizes,
+            SizeArg::Range(None, None) => return vec![],
+            SizeArg::Range(Some(x), None) => return vec![x],
+            SizeArg::Range(None, Some(_)) => unreachable!(),
+            SizeArg::Range(Some(x), Some(y)) => (x, y),
         };
         BLOCK_SIZES
             .clone()
@@ -304,10 +328,12 @@ impl SizeRange {
 
     fn get_datas(self) -> Vec<isize> {
         let (from, till) = match self {
-            SizeRange(Some(x), Some(y)) => (x, y),
-            SizeRange(Some(x), None) => return vec![x],
-            SizeRange(None, Some(_)) => unreachable!(),
-            SizeRange(None, None) => return vec![],
+            SizeArg::None => return vec![],
+            SizeArg::List(sizes) => return sizes,
+            SizeArg::Range(None, None) => return vec![],
+            SizeArg::Range(Some(x), None) => return vec![x],
+            SizeArg::Range(None, Some(_)) => unreachable!(),
+            SizeArg::Range(Some(x), Some(y)) => (x, y),
         };
         DATA_SIZES
             .clone()
