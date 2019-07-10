@@ -1,13 +1,10 @@
-// TODO: plots
-// a. latency histogram plot.
-// b. throughput moving average plot.
-// c. repeat (a) and (b) for different blocksizes and datasizes
-// d. repeat (a), (b) and (c) with different 1,2,4,8 writers.
+mod error;
+mod plot;
+mod stats;
 
 use std::{
     convert::TryInto,
-    error::Error,
-    fmt, fs,
+    fs,
     io::{self, Write},
     iter, path,
     str::FromStr,
@@ -20,7 +17,8 @@ use structopt::StructOpt;
 #[macro_use]
 extern crate lazy_static;
 
-mod plot;
+use crate::error::DiskioError;
+use crate::stats::Stats;
 
 #[derive(Debug, StructOpt, Clone)]
 struct Opt {
@@ -81,7 +79,21 @@ impl Context {
         p.push(&opt.path);
         p.push(format!(
             "diskio-plot-latency-{}x{}x{}.png",
-            opt.nthreads, bsize, dsize
+            opt.nthreads,
+            humanize(bsize.try_into().unwrap()),
+            humanize(dsize.try_into().unwrap())
+        ));
+        p
+    }
+
+    fn path_throughput_plot(opt: &Opt, bsize: isize, dsize: isize) -> path::PathBuf {
+        let mut p = path::PathBuf::new();
+        p.push(&opt.path);
+        p.push(format!(
+            "diskio-plot-throughput-{}x{}x{}.png",
+            opt.nthreads,
+            humanize(bsize.try_into().unwrap()),
+            humanize(dsize.try_into().unwrap())
         ));
         p
     }
@@ -113,32 +125,48 @@ fn main() {
             writers.push(thread::spawn(move || writer_thread(ctxt)));
         }
 
-        let mut stats = Stats::new();
+        let mut ss = Stats::new();
         for (i, w) in writers.into_iter().enumerate() {
             match w.join() {
                 Ok(res) => match res {
-                    Ok(stat) => stats.join(stat),
+                    Ok(stat) => ss.join(stat),
                     Err(err) => println!("thread {} errored: {}", i, err),
                 },
                 Err(_) => println!("thread {} paniced", i),
             }
         }
-
         plot::latency(
             Context::path_latency_plot(&opt, bsize, dsize),
-            stats.latencies,
+            format!(
+                "fd.sync_all() latency, block-size:{}, threads:{}",
+                humanize(bsize.try_into().unwrap()),
+                opt.nthreads,
+            ),
+            ss.sync_latencies,
+        )
+        .expect("unable to plot latency");
+
+        plot::throughput(
+            Context::path_throughput_plot(&opt, bsize, dsize),
+            format!(
+                "throughput for block-size:{}, threads:{}",
+                humanize(bsize.try_into().unwrap()),
+                opt.nthreads,
+            ),
+            ss.throughputs,
         )
         .expect("unable to plot latency");
 
         let elapsed = start_time.elapsed().expect("failed to compute elapsed");
         let total: usize = TOTAL.load(Ordering::Relaxed).try_into().unwrap();
         println!(
-            "wrote {} across {} threads with {} block-size in {:?}\n",
+            "wrote {} using {} threads with {} block-size in {:?}\n",
             humanize(total),
             opt.nthreads,
-            bsize,
+            humanize(bsize.try_into().unwrap()),
             elapsed
         );
+        TOTAL.store(0, Ordering::Relaxed);
     }
 }
 
@@ -162,17 +190,18 @@ fn writer_thread(mut ctxt: Context) -> Result<Stats, DiskioError> {
             let n: isize = ctxt.block.len().try_into().unwrap();
             n
         };
-        stats
-            .latencies
-            .push(start_time.elapsed()?.as_micros().try_into().unwrap());
+        stats.click(start_time, ctxt.block.len().try_into().unwrap())?;
     }
+
     let n: u64 = ctxt.fd.metadata().unwrap().len().try_into().unwrap();
     TOTAL.fetch_add(n, Ordering::Relaxed);
     Ok(stats)
 }
 
 fn humanize(bytes: usize) -> String {
-    if bytes < (1024 * 1024) {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < (1024 * 1024) {
         format!("{}KB", bytes / 1024)
     } else if bytes < (1024 * 1024 * 1024) {
         format!("{}MB", bytes / (1024 * 1024))
@@ -268,7 +297,7 @@ impl SizeRange {
             .clone()
             .iter()
             .skip_while(|x| **x < from)
-            .take_while(|x| **x < till)
+            .take_while(|x| **x <= till)
             .map(|x| *x)
             .collect()
     }
@@ -284,42 +313,8 @@ impl SizeRange {
             .clone()
             .iter()
             .skip_while(|x| **x < from)
-            .take_while(|x| **x < till)
+            .take_while(|x| **x <= till)
             .map(|x| *x)
             .collect()
-    }
-}
-
-struct Stats {
-    latencies: Vec<u64>,
-}
-
-impl Stats {
-    fn new() -> Stats {
-        Stats { latencies: vec![] }
-    }
-
-    fn join(&mut self, other: Stats) {
-        self.latencies.extend_from_slice(&other.latencies);
-    }
-}
-
-struct DiskioError(String);
-
-impl fmt::Display for DiskioError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<io::Error> for DiskioError {
-    fn from(err: io::Error) -> DiskioError {
-        DiskioError(err.description().to_string())
-    }
-}
-
-impl From<time::SystemTimeError> for DiskioError {
-    fn from(err: time::SystemTimeError) -> DiskioError {
-        DiskioError(err.description().to_string())
     }
 }
