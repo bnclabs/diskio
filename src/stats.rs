@@ -22,12 +22,7 @@ impl Stats {
 
     pub fn click(&mut self, start: time::SystemTime, size: u64) -> Result<(), error::DiskioError> {
         if self.tp_second.elapsed()?.as_secs() == 1 {
-            let throughput = self
-                .throughputs
-                .last()
-                .map(|x| (*x + self.tp_current) / 2)
-                .unwrap_or(self.tp_current);
-            self.throughputs.push(throughput);
+            self.throughputs.push(self.tp_current);
             self.tp_second = time::SystemTime::now();
             self.tp_current = 0;
         } else {
