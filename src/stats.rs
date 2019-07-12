@@ -6,6 +6,7 @@ use crate::error;
 pub struct Stats {
     tp_second: time::SystemTime,
     tp_current: u64,
+    pub file_size: u64,
     pub sync_latencies: Vec<u64>,
     pub throughputs: Vec<u64>,
 }
@@ -17,6 +18,7 @@ impl Stats {
             tp_current: 0,
             sync_latencies: vec![],
             throughputs: vec![],
+            file_size: Default::default(),
         }
     }
 
@@ -40,5 +42,6 @@ impl Stats {
             .iter_mut()
             .zip(other.throughputs.iter())
             .for_each(|(x, y)| *x += *y);
+        self.file_size += other.file_size;
     }
 }

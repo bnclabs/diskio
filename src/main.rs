@@ -1,8 +1,8 @@
 use std::{
     convert::TryInto,
-    fs,
+    ffi, fs,
     io::{self, Read, Seek, Write},
-    iter, path,
+    path,
     str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
     thread, time,
@@ -28,78 +28,177 @@ struct Opt {
     #[structopt(long = "block-size", default_value = "1024")]
     block_size: SizeArg,
 
-    #[structopt(long = "data-size", default_value = "1073741824")]
-    data_size: SizeArg,
+    #[structopt(long = "duration", default_value = "10")]
+    duration: u64,
 
-    #[structopt(long = "threads", default_value = "1")]
-    nthreads: isize,
+    #[structopt(long = "appenders", default_value = "1")]
+    appenders: isize,
+
+    #[structopt(long = "writers", default_value = "0")]
+    writers: isize,
+
+    #[structopt(long = "rangers", default_value = "0")]
+    rangers: isize,
+
+    #[structopt(long = "reverses", default_value = "0")]
+    reverses: isize,
+
+    #[structopt(long = "readers", default_value = "0")]
+    readers: isize,
 
     #[structopt(long = "seed", default_value = "0")]
     seed: u128,
+
+    #[structopt(long = "plot")]
+    plot: bool,
+}
+
+impl Opt {
+    fn nappenders(&self) -> isize {
+        let xs = vec![
+            1,
+            self.appenders,
+            self.writers,
+            self.rangers,
+            self.reverses,
+            self.readers,
+        ];
+        xs.into_iter().max().unwrap()
+    }
+
+    fn nwriters(&self) -> isize {
+        self.appenders + self.writers
+    }
+
+    fn nreaders(&self) -> isize {
+        self.rangers + self.reverses + self.readers
+    }
 }
 
 struct Context {
+    opt: Opt,
+    filename: ffi::OsString,
     fd: fs::File,
     block: Vec<u8>,
-    data_size: isize,
-    opt: Opt,
+    duration: time::Duration,
 }
 
 impl Context {
-    fn new(block_size: isize, data_size: isize, fd: fs::File, opt: Opt) -> Context {
+    fn new_append(i: isize, bsize: isize, opt: Opt) -> Context {
+        let filename = Context::new_data_file(i, &opt).unwrap();
+        println!("creating file `{}` ..", filename.to_str().unwrap());
+        let fd = fs::OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .open(filename.clone())
+            .unwrap();
+        let duration = time::Duration::from_nanos(opt.duration * 1_000_000_000);
+
         Context {
+            opt,
             fd,
+            filename,
             block: {
-                let mut block = Vec::with_capacity(block_size as usize);
+                let mut block = Vec::with_capacity(bsize as usize);
                 block.resize(block.capacity(), 0xAB);
                 block
             },
-            data_size,
-            opt,
+            duration,
         }
+    }
+
+    fn new_write(i: isize, bsize: isize, opt: Opt) -> Context {
+        let filename = Context::open_data_file(i, &opt).unwrap();
+        let fd = fs::OpenOptions::new()
+            .write(true)
+            .open(filename.clone())
+            .unwrap();
+        let duration = time::Duration::from_nanos(opt.duration * 1_000_000_000);
+
+        Context {
+            opt,
+            fd,
+            filename,
+            block: {
+                let mut block = Vec::with_capacity(bsize as usize);
+                block.resize(block.capacity(), 0xAB);
+                block
+            },
+            duration,
+        }
+    }
+
+    fn new_read(i: isize, bsize: isize, opt: Opt) -> Context {
+        let filename = Context::open_data_file(i, &opt).unwrap();
+        let fd = fs::OpenOptions::new()
+            .read(true)
+            .open(filename.clone())
+            .unwrap();
+        let duration = time::Duration::from_nanos(opt.duration * 1_000_000_000);
+
+        Context {
+            opt,
+            fd,
+            filename,
+            block: {
+                let mut block = Vec::with_capacity(bsize as usize);
+                block.resize(block.capacity(), 0xAB);
+                block
+            },
+            duration,
+        }
+    }
+
+    fn new_data_file(id: isize, opt: &Opt) -> io::Result<ffi::OsString> {
+        // create dir
+        let mut p = path::PathBuf::new();
+        p.push(&opt.path);
+        fs::create_dir_all(p.as_path())?;
+        // remove file
+        p.push(format!("diskio-{}.data", id));
+        fs::remove_file(p.as_path()).ok();
+        Ok(p.into())
+    }
+
+    fn open_data_file(id: isize, opt: &Opt) -> io::Result<ffi::OsString> {
+        // create dir
+        let mut p = path::PathBuf::new();
+        p.push(&opt.path);
+        p.push(format!("diskio-{}.data", id));
+        Ok(p.into())
+    }
+
+    fn drop_data_file(id: isize, opt: &Opt) {
+        let mut p = path::PathBuf::new();
+        p.push(&opt.path);
+        p.push(format!("diskio-{}.data", id));
+        fs::remove_file(p.as_path()).ok();
     }
 }
 
 impl Context {
-    fn make_data_file(id: isize, opt: &Opt) -> io::Result<fs::File> {
-        let filepath = {
-            // create dir
-            let mut p = path::PathBuf::new();
-            p.push(&opt.path);
-            fs::create_dir_all(p.as_path())?;
-            // remove file
-            p.push(format!("diskio-{}.data", id));
-            fs::remove_file(p.as_path()).ok();
-            p
-        };
-
-        println!("creating file `{}` ..", filepath.to_str().unwrap());
-        Ok(fs::OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(filepath.as_path())?)
-    }
-
-    fn path_latency_plot(opt: &Opt, bsize: isize, dsize: isize) -> path::PathBuf {
+    fn path_latency_plot(opt: &Opt, block_size: isize) -> path::PathBuf {
         let mut p = path::PathBuf::new();
         p.push(&opt.path);
         p.push(format!(
-            "diskio-plot-latency-{}x{}x{}.png",
-            opt.nthreads,
-            humanize(bsize.try_into().unwrap()),
-            humanize(dsize.try_into().unwrap())
+            "diskio-plot-latency-{}Rx{}Wx{}x{}.png",
+            opt.nreaders(),
+            opt.nwriters(),
+            humanize(block_size.try_into().unwrap()),
+            opt.duration,
         ));
         p
     }
 
-    fn path_throughput_plot(opt: &Opt, bsize: isize, dsize: isize) -> path::PathBuf {
+    fn path_throughput_plot(opt: &Opt, block_size: isize) -> path::PathBuf {
         let mut p = path::PathBuf::new();
         p.push(&opt.path);
         p.push(format!(
-            "diskio-plot-throughput-{}x{}x{}.png",
-            opt.nthreads,
-            humanize(bsize.try_into().unwrap()),
-            humanize(dsize.try_into().unwrap())
+            "diskio-plot-throughput-{}Rx{}Wx{}x{}.png",
+            opt.nreaders(),
+            opt.nwriters(),
+            humanize(block_size.try_into().unwrap()),
+            opt.duration,
         ));
         p
     }
@@ -110,79 +209,128 @@ static R_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
     let opt = Opt::from_args();
-    let xs = opt
-        .clone()
-        .data_size
-        .get_datas()
-        .iter()
-        .map(|d| {
-            iter::repeat(*d)
-                .zip(opt.clone().block_size.get_blocks())
-                .collect::<Vec<(isize, isize)>>()
-        })
-        .flatten()
-        .collect::<Vec<(isize, isize)>>();
 
-    for (dsize, bsize) in xs {
-        let mut writers = vec![];
+    for bsize in opt.clone().block_size.get_blocks() {
+        // io: append data
+        let mut threads = vec![];
         let start_time = time::SystemTime::now();
-        for i in 0..opt.nthreads {
-            let fd = Context::make_data_file(i, &opt).unwrap();
-            let dsize = dsize / opt.nthreads;
-            let ctxt = Context::new(bsize, dsize, fd, opt.clone());
-            writers.push(thread::spawn(move || append_thread(i, ctxt)));
+        for i in 0..opt.nappenders() {
+            let ctxt = Context::new_append(i, bsize, opt.clone());
+            threads.push(thread::spawn(move || append_thread(i, ctxt)));
         }
+        let ss = aggregate_threads(threads);
+        log_details(bsize, start_time, &ss);
+        do_plot(bsize, &opt, ss);
+        W_TOTAL.store(0, Ordering::Relaxed);
 
-        let mut ss = Stats::new();
-        for (i, w) in writers.into_iter().enumerate() {
-            match w.join() {
-                Ok(res) => match res {
-                    Ok(stat) => ss.join(stat),
-                    Err(err) => println!("thread {} errored: {}", i, err),
-                },
-                Err(_) => println!("thread {} paniced", i),
-            }
+        // io: other operations
+        let mut threads = vec![];
+        let start_time = time::SystemTime::now();
+        for i in 0..opt.writers {
+            let ctxt = Context::new_write(i, bsize, opt.clone());
+            threads.push(thread::spawn(move || writer_thread(i, ctxt)));
         }
+        for i in 0..opt.rangers {
+            let ctxt = Context::new_read(i, bsize, opt.clone());
+            threads.push(thread::spawn(move || range_thread(i, ctxt)));
+        }
+        for i in 0..opt.reverses {
+            let ctxt = Context::new_read(i, bsize, opt.clone());
+            threads.push(thread::spawn(move || reverse_thread(i, ctxt)));
+        }
+        for i in 0..opt.readers {
+            let ctxt = Context::new_read(i, bsize, opt.clone());
+            threads.push(thread::spawn(move || reader_thread(i, ctxt)));
+        }
+        let ss = aggregate_threads(threads);
+        log_details(bsize, start_time, &ss);
+        do_plot(bsize, &opt, ss);
+        W_TOTAL.store(0, Ordering::Relaxed);
+        R_TOTAL.store(0, Ordering::Relaxed);
+
+        // remove files
+        (0..opt.nappenders()).for_each(|i| Context::drop_data_file(i, &opt));
+
+        println!("");
+    }
+}
+
+fn aggregate_threads(
+    threads: Vec<thread::JoinHandle<Result<Stats, DiskioError>>>, // active
+) -> Stats {
+    let mut aggr_stats = Stats::new();
+    for (i, thread) in threads.into_iter().enumerate() {
+        match thread.join() {
+            Ok(res) => match res {
+                Ok(stat) => aggr_stats.join(stat),
+                Err(err) => println!("thread {} errored: {}", i, err),
+            },
+            Err(_) => println!("thread {} paniced", i),
+        }
+    }
+    aggr_stats
+}
+
+fn log_details(bsize: isize, start: time::SystemTime, ss: &Stats) {
+    let elapsed = start.elapsed().expect("failed to compute elapsed");
+    let w_total: usize = W_TOTAL.load(Ordering::Relaxed).try_into().unwrap();
+    let r_total: usize = R_TOTAL.load(Ordering::Relaxed).try_into().unwrap();
+
+    if w_total > 0 {
+        println!(
+            "wrote {}, using {} blocks in {:?}, filesize @ {} ",
+            humanize(w_total),
+            humanize(bsize.try_into().unwrap()),
+            elapsed,
+            humanize(ss.file_size.try_into().unwrap()),
+        );
+    }
+    if r_total > 0 {
+        println!(
+            "readr {}, using {} blocks in {:?}, filesize @ {} ",
+            humanize(r_total),
+            humanize(bsize.try_into().unwrap()),
+            elapsed,
+            humanize(ss.file_size.try_into().unwrap()),
+        );
+    }
+}
+
+fn do_plot(bsize: isize, opt: &Opt, ss: Stats) {
+    if opt.plot {
         plot::latency(
-            Context::path_latency_plot(&opt, bsize, dsize),
+            Context::path_latency_plot(&opt, bsize),
             format!(
-                "fd.sync_all() latency, block-size:{}, threads:{}",
+                "fd.sync_all() latency, block-size:{}, wr:{}, rd:{}",
                 humanize(bsize.try_into().unwrap()),
-                opt.nthreads,
+                opt.nwriters(),
+                opt.nreaders(),
             ),
             ss.sync_latencies,
         )
         .expect("unable to plot latency");
 
         plot::throughput(
-            Context::path_throughput_plot(&opt, bsize, dsize),
+            Context::path_throughput_plot(&opt, bsize),
             format!(
-                "throughput for block-size:{}, threads:{}",
+                "throughput for block-size:{}, wr:{}, rd:{}",
                 humanize(bsize.try_into().unwrap()),
-                opt.nthreads,
+                opt.nwriters(),
+                opt.nreaders(),
             ),
             ss.throughputs,
         )
         .expect("unable to plot latency");
-
-        let elapsed = start_time.elapsed().expect("failed to compute elapsed");
-        let total: usize = W_TOTAL.load(Ordering::Relaxed).try_into().unwrap();
-        println!(
-            "wrote {} using {} threads with {} block-size in {:?}\n",
-            humanize(total),
-            opt.nthreads,
-            humanize(bsize.try_into().unwrap()),
-            elapsed
-        );
-        W_TOTAL.store(0, Ordering::Relaxed);
     }
 }
 
 fn append_thread(_id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
-    let mut stats = Stats::new();
+    // println!("append_thread {}", _id);
+    let mut ss = Stats::new();
     let block_size: isize = ctxt.block.len().try_into().unwrap();
-    while ctxt.data_size > 0 {
-        let start_time = time::SystemTime::now();
+    let start_time = time::SystemTime::now();
+    while start_time.elapsed().unwrap() < ctxt.duration {
+        let lbegin = time::SystemTime::now();
         match ctxt.fd.write(ctxt.block.as_slice())? {
             n if n != ctxt.block.len() => {
                 let msg = format!("partial write {}", n);
@@ -191,30 +339,31 @@ fn append_thread(_id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
             _ => Ok(()),
         }?;
         ctxt.fd.sync_all()?;
-        ctxt.data_size -= block_size;
-        W_TOTAL.fetch_add(block_size, Ordering::Relaxed);
-        stats.click(start_time, ctxt.block.len().try_into().unwrap())?;
+        W_TOTAL.fetch_add(block_size.try_into().unwrap(), Ordering::Relaxed);
+        ss.click(lbegin, ctxt.block.len().try_into().unwrap())?;
     }
 
-    Ok(stats)
+    ss.file_size = fs::metadata(ctxt.filename)?.len();
+    Ok(ss)
 }
 
-#[allow(dead_code)]
 fn writer_thread(id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
+    // println!("writer_thread {}", id);
     let seed = ctxt.opt.seed + (id as u128);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let mut stats = Stats::new();
+    let mut ss = Stats::new();
     let file_size = ctxt.fd.metadata()?.len();
     let block_size: isize = ctxt.block.len().try_into().unwrap();
-    while ctxt.data_size > 0 {
+    let start_time = time::SystemTime::now();
+    while start_time.elapsed().unwrap() < ctxt.duration {
         let fpos = {
             let scale: f64 = rng.gen_range(0.0, 1.0);
             ((file_size as f64) * scale) as u64
         };
         ctxt.fd.seek(io::SeekFrom::Start(fpos))?;
 
-        let start_time = time::SystemTime::now();
+        let lbegin = time::SystemTime::now();
         match ctxt.fd.write(ctxt.block.as_slice())? {
             n if n != ctxt.block.len() => {
                 let msg = format!("partial write {}", n);
@@ -223,70 +372,75 @@ fn writer_thread(id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
             _ => Ok(()),
         }?;
         ctxt.fd.sync_all()?;
-        ctxt.data_size -= block_size;
-        W_TOTAL.fetch_add(block_size, Ordering::Relaxed);
-        stats.click(start_time, ctxt.block.len().try_into().unwrap())?;
+        W_TOTAL.fetch_add(block_size.try_into().unwrap(), Ordering::Relaxed);
+        ss.click(lbegin, ctxt.block.len().try_into().unwrap())?;
     }
 
-    Ok(stats)
+    ss.file_size = fs::metadata(ctxt.filename)?.len();
+    Ok(ss)
 }
 
-#[allow(dead_code)]
 fn range_thread(_id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
-    let mut stats = Stats::new();
-    let mut file_size = ctxt.fd.metadata()?.len();
-    while file_size > 0 {
-        let start_time = time::SystemTime::now();
-        let n: u64 = ctxt.fd.read(ctxt.block.as_mut_slice())?.try_into().unwrap();
-        file_size -= n;
-        R_TOTAL.fetch_add(n, Ordering::Relaxed);
-        stats.click(start_time, n.try_into().unwrap())?;
-    }
-
-    Ok(stats)
-}
-
-#[allow(dead_code)]
-fn reverse_thread(_id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
-    let mut stats = Stats::new();
-    let mut file_size = ctxt.fd.metadata()?.len();
-    while file_size > 0 {
-        let fpos = file_size - ctxt.block.len();
+    let mut ss = Stats::new();
+    let (mut fpos, file_size) = (0, ctxt.fd.metadata()?.len());
+    let n: u64 = ctxt.block.len().try_into().unwrap();
+    let start_time = time::SystemTime::now();
+    while start_time.elapsed().unwrap() < ctxt.duration {
+        fpos = (fpos + n) % file_size;
         ctxt.fd.seek(io::SeekFrom::Start(fpos))?;
 
-        let start_time = time::SystemTime::now();
+        let lbegin = time::SystemTime::now();
         let n: u64 = ctxt.fd.read(ctxt.block.as_mut_slice())?.try_into().unwrap();
-        file_size -= n;
         R_TOTAL.fetch_add(n, Ordering::Relaxed);
-        stats.click(start_time, n.try_into().unwrap())?;
+        ss.click(lbegin, n.try_into().unwrap())?;
     }
 
-    Ok(stats)
+    ss.file_size = fs::metadata(ctxt.filename)?.len();
+    Ok(ss)
 }
 
-#[allow(dead_code)]
-fn randr_thread(_id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
+fn reverse_thread(_id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
+    let mut ss = Stats::new();
+    let file_size = ctxt.fd.metadata()?.len();
+    let n: u64 = ctxt.block.len().try_into().unwrap();
+    let mut fpos = file_size - n;
+    let start_time = time::SystemTime::now();
+    while start_time.elapsed().unwrap() < ctxt.duration {
+        fpos = (fpos - n) % file_size;
+        ctxt.fd.seek(io::SeekFrom::Start(fpos))?;
+
+        let lbegin = time::SystemTime::now();
+        let n: u64 = ctxt.fd.read(ctxt.block.as_mut_slice())?.try_into().unwrap();
+        R_TOTAL.fetch_add(n, Ordering::Relaxed);
+        ss.click(lbegin, n.try_into().unwrap())?;
+    }
+
+    ss.file_size = fs::metadata(ctxt.filename)?.len();
+    Ok(ss)
+}
+
+fn reader_thread(id: isize, mut ctxt: Context) -> Result<Stats, DiskioError> {
     let seed = ctxt.opt.seed + (id as u128);
     let mut rng = SmallRng::from_seed(seed.to_le_bytes());
 
-    let mut stats = Stats::new();
-    let mut file_size = ctxt.fd.metadata()?.len();
-    let mut size = ctxt.fd.metadata()?.len();
-    while file_size > 0 {
+    let mut ss = Stats::new();
+    let file_size = ctxt.fd.metadata()?.len();
+    let start_time = time::SystemTime::now();
+    while start_time.elapsed().unwrap() < ctxt.duration {
         let fpos = {
             let scale: f64 = rng.gen_range(0.0, 1.0);
-            ((size as f64) * scale) as u64
+            ((file_size as f64) * scale) as u64
         };
         ctxt.fd.seek(io::SeekFrom::Start(fpos))?;
 
-        let start_time = time::SystemTime::now();
+        let lbegin = time::SystemTime::now();
         let n: u64 = ctxt.fd.read(ctxt.block.as_mut_slice())?.try_into().unwrap();
-        file_size -= n;
         R_TOTAL.fetch_add(n, Ordering::Relaxed);
-        stats.click(start_time, n.try_into().unwrap())?;
+        ss.click(lbegin, n.try_into().unwrap())?;
     }
 
-    Ok(stats)
+    ss.file_size = fs::metadata(ctxt.filename)?.len();
+    Ok(ss)
 }
 
 fn humanize(bytes: usize) -> String {
@@ -311,8 +465,14 @@ enum SizeArg {
 }
 
 lazy_static! {
-    static ref ARG_RE1: Regex = Regex::new(r"^([0-9]+[kKmMgG]?)(\.\.[0-9]+[kKmMgG]?)?$").unwrap();
-    static ref ARG_RE2: Regex = Regex::new(r"^([0-9]+[kKmMgG]?)(,[0-9]+[kKmMgG]?)*$").unwrap();
+    static ref ARG_RE1: Regex = {
+        let patt = r"^([0-9]+[kKmMgG]?)(\.\.[0-9]+[kKmMgG]?)?$";
+        Regex::new(patt).unwrap()
+    };
+    static ref ARG_RE2: Regex = {
+        let patt = r"^([0-9]+[kKmMgG]?)(,[0-9]+[kKmMgG]?)*$";
+        Regex::new(patt).unwrap()
+    };
     static ref BLOCK_SIZES: [isize; 9] = [
         128,
         256,
@@ -344,7 +504,8 @@ impl FromStr for SizeArg {
             Some(captrs) => {
                 let x = captrs.get(1).map(|m| SizeArg::to_isize(m.as_str()));
                 let y = captrs.get(2).map(|m| {
-                    SizeArg::to_isize(m.as_str().chars().skip(2).collect::<String>().as_str())
+                    let s = m.as_str().chars().skip(2).collect::<String>();
+                    SizeArg::to_isize(s.as_str())
                 });
                 // println!("re1 {}, {:?} {:?}", s, x, y);
                 return Ok(SizeArg::Range(x.transpose()?, y.transpose()?));
@@ -409,24 +570,6 @@ impl SizeArg {
             SizeArg::Range(Some(x), Some(y)) => (x, y),
         };
         BLOCK_SIZES
-            .clone()
-            .iter()
-            .skip_while(|x| **x < from)
-            .take_while(|x| **x <= till)
-            .map(|x| *x)
-            .collect()
-    }
-
-    fn get_datas(self) -> Vec<isize> {
-        let (from, till) = match self {
-            SizeArg::None => return vec![],
-            SizeArg::List(sizes) => return sizes,
-            SizeArg::Range(None, None) => return vec![],
-            SizeArg::Range(Some(x), None) => return vec![x],
-            SizeArg::Range(None, Some(_)) => unreachable!(),
-            SizeArg::Range(Some(x), Some(y)) => (x, y),
-        };
-        DATA_SIZES
             .clone()
             .iter()
             .skip_while(|x| **x < from)

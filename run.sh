@@ -1,8 +1,10 @@
-cargo run --release -- --threads 1 --block-size 200..100K --data-size 1M..1G /tmp
-cargo run --release -- --threads 1 --block-size 100K..1M --data-size 1G..10G /tmp
-cargo run --release -- --threads 2 --block-size 200..100K --data-size 1M..1G /tmp
-cargo run --release -- --threads 2 --block-size 100K..1M --data-size 1G..10G /tmp
-cargo run --release -- --threads 4 --block-size 200..100K --data-size 1M..1G /tmp
-cargo run --release -- --threads 4 --block-size 100K..1M --data-size 1G..10G /tmp
-cargo run --release -- --threads 8 --block-size 200..100K --data-size 1M..1G /tmp
-cargo run --release -- --threads 8 --block-size 100K..1M --data-size 1G..10G /tmp
+# append data
+#cargo run --release -- --appenders 1 --block-size 100K /tmp
+#cargo run --release -- --appenders 1 --block-size 1M /tmp
+#cargo run --release -- --appenders 2 --block-size 100K /tmp
+#cargo run --release -- --appenders 2 --block-size 1M /tmp
+
+# random write data
+cargo run --release -- --appenders 0 --writers 1 --block-size 4K /tmp
+
+#rm -rf /tmp/diskio*
