@@ -271,27 +271,27 @@ fn aggregate_threads(
     aggr_stats
 }
 
-fn log_details(bsize: isize, start: time::SystemTime, ss: &Stats) {
+fn log_details(bsize: isize, start: time::SystemTime, _ss: &Stats) {
     let elapsed = start.elapsed().expect("failed to compute elapsed");
     let w_total: usize = W_TOTAL.load(Ordering::Relaxed).try_into().unwrap();
     let r_total: usize = R_TOTAL.load(Ordering::Relaxed).try_into().unwrap();
 
     if w_total > 0 {
         println!(
-            "wrote {}, using {} blocks in {:?}, filesize @ {} ",
+            "wrote {}, using {} blocks in {:?}",
             humanize(w_total),
             humanize(bsize.try_into().unwrap()),
             elapsed,
-            humanize(ss.file_size.try_into().unwrap()),
+            // humanize(_ss.file_size.try_into().unwrap()),
         );
     }
     if r_total > 0 {
         println!(
-            "readr {}, using {} blocks in {:?}, filesize @ {} ",
+            "readr {}, using {} blocks in {:?}",
             humanize(r_total),
             humanize(bsize.try_into().unwrap()),
             elapsed,
-            humanize(ss.file_size.try_into().unwrap()),
+            // humanize(_ss.file_size.try_into().unwrap()),
         );
     }
 }
