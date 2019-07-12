@@ -31,7 +31,7 @@ struct Opt {
     #[structopt(long = "duration", default_value = "10")]
     duration: u64,
 
-    #[structopt(long = "appenders", default_value = "1")]
+    #[structopt(long = "appenders", default_value = "0")]
     appenders: isize,
 
     #[structopt(long = "writers", default_value = "0")]
@@ -72,6 +72,14 @@ impl Opt {
 
     fn nreaders(&self) -> isize {
         self.rangers + self.reverses + self.readers
+    }
+
+    fn append_block_size(&self, block_size: isize) -> isize {
+        if self.appenders == 0 {
+            10 * 1024 * 1024
+        } else {
+            block_size
+        }
     }
 }
 
@@ -214,13 +222,14 @@ fn main() {
         // io: append data
         let mut threads = vec![];
         let start_time = time::SystemTime::now();
+        let append_bsize = opt.append_block_size(bsize);
         for i in 0..opt.nappenders() {
-            let ctxt = Context::new_append(i, bsize, opt.clone());
+            let ctxt = Context::new_append(i, append_bsize, opt.clone());
             threads.push(thread::spawn(move || append_thread(i, ctxt)));
         }
         let ss = aggregate_threads(threads);
-        log_details(bsize, start_time, &ss);
-        do_plot(bsize, &opt, ss);
+        log_details(append_bsize, start_time, &ss);
+        do_plot(append_bsize, &opt, ss);
         W_TOTAL.store(0, Ordering::Relaxed);
 
         // io: other operations
