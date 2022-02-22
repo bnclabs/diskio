@@ -1,3 +1,5 @@
+**Migrated to [rdms](http://github.com/bnclabs/rdms) project.**
+
 A tiny tool to measure disk performance for both HDD and SSD. By
 performance we mean **latency** and **throughput**. The tool
 can also plot latency and throught graphs.
